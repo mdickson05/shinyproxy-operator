@@ -57,6 +57,29 @@ class MainIntegrationTest : IntegrationTestBase() {
         dockerAssertions.assertShinyProxyContainer(shinyProxyContainer, shinyProxyInstance)
     }
 
+    @Test
+    fun `custom caddy http port`() {
+        val config = mapOf("SPO_CADDY_HTTP_PORT" to "18080")
+        setup(config) { dataDir, inputDir, operator, eventController, dockerAssertions, _, _ ->
+            val hash = createInputFile(inputDir, "simple_config.yaml", "realm1.shinyproxy.yaml")
+            val shinyProxyInstance = ShinyProxyInstance("realm1", "default", "default-realm1", hash, true, 0)
+
+            scope.launch {
+                operator.init()
+                operator.run()
+            }
+
+            eventController.waitForNextReconcile(hash)
+
+            val shinyProxyContainer = getSingleShinyProxyContainer(shinyProxyInstance)
+            dockerAssertions.assertRedisContainer()
+            dockerAssertions.assertCaddyContainer("simple_test_caddy.json", mapOf(
+                "#CONTAINER_IP#" to shinyProxyContainer.getSharedNetworkIpAddress()!!
+            ), expectedPortBindings = mapOf("80" to "18080"))
+            dockerAssertions.assertShinyProxyContainer(shinyProxyContainer, shinyProxyInstance)
+        }
+    }
+
     @ValueSource(strings = ["simple_config_public_subpath.yaml", "simple_config_public_subpath2.yaml"])
     @ParameterizedTest
     fun `two instances with subpath`(file: String) = setup { dataDir, inputDir, operator, eventController, dockerAssertions, _, _ ->
@@ -525,6 +548,43 @@ class MainIntegrationTest : IntegrationTestBase() {
 
             assertEquals(templateFile1, dataDir.resolve(shinyProxyContainer1.name()!!).resolve("templates/index.html").readText())
             assertEquals(templateFile2, dataDir.resolve(shinyProxyContainer2.name()!!).resolve("templates/index.html").readText())
+        }
+    }
+
+    @Test
+    fun `custom caddy ports with tls`() {
+        val config = mapOf(
+            "SPO_CADDY_ENABLE_TLS" to "true",
+            "SPO_CADDY_HTTP_PORT" to "18080",
+            "SPO_CADDY_HTTPS_PORT" to "18443"
+        )
+        setup(config) { dataDir, inputDir, operator, eventController, dockerAssertions, _, _ ->
+            val cert = createRawInputFile(inputDir, "cert.pem", "cert.pem")
+            val key = createRawInputFile(inputDir, "key.pem", "key.pem")
+            createRawInputFile(inputDir, "index.html", "templates/realm1/index.html")
+            val hash1 = createInputFile(inputDir, "advanced_caddy_config1.yaml", "realm1.shinyproxy.yaml", mapOf("#INPUT_DIR#" to inputDir.toString()))
+            val shinyProxyInstance1 = ShinyProxyInstance("realm1", "default", "default-realm1", hash1, true, 0)
+            createRawInputFile(inputDir, "index.html", "templates/default-realm2/index.html")
+            val hash2 = createInputFile(inputDir, "advanced_caddy_config2.yaml", "realm2.shinyproxy.yaml", mapOf("#INPUT_DIR#" to inputDir.toString()))
+            val shinyProxyInstance2 = ShinyProxyInstance("realm2", "default", "default-realm2", hash2, true, 0)
+
+            scope.launch {
+                operator.init()
+                operator.run()
+            }
+
+            eventController.waitForNextReconcile(hash1)
+            eventController.waitForNextReconcile(hash2)
+
+            val shinyProxyContainer1 = getSingleShinyProxyContainer(shinyProxyInstance1)
+            val shinyProxyContainer2 = getSingleShinyProxyContainer(shinyProxyInstance2)
+            dockerAssertions.assertRedisContainer()
+            dockerAssertions.assertCaddyContainer("advanced_caddy.yaml", mapOf(
+                "#CONTAINER_IP#" to shinyProxyContainer1.getSharedNetworkIpAddress()!!,
+                "#CONTAINER_IP_2#" to shinyProxyContainer2.getSharedNetworkIpAddress()!!
+            ), true, expectedPortBindings = mapOf("80" to "18080", "443" to "18443"))
+            assertEquals(cert, dataDir.resolve("sp-caddy/certs/itest.local.crt.pem").readText())
+            assertEquals(key, dataDir.resolve("sp-caddy/certs/itest.local.key.pem").readText())
         }
     }
 

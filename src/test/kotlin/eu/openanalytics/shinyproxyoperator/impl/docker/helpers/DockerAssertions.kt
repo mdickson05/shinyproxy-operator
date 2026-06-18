@@ -61,7 +61,7 @@ class DockerAssertions(private val base: IntegrationTestBase,
         assertEquals(expectedRedisconfig, redisConfig)
     }
 
-    fun assertCaddyContainer(expectedName: String, replacements: Map<String, String>, tls: Boolean = false) {
+    fun assertCaddyContainer(expectedName: String, replacements: Map<String, String>, tls: Boolean = false, expectedPortBindings: Map<String, String> = mapOf()) {
         val caddyContainer = base.inspectContainer(this.base.getContainerByName("sp-caddy"))
         assertNotNull(caddyContainer)
         assertEquals(true, caddyContainer.state().running())
@@ -73,11 +73,17 @@ class DockerAssertions(private val base: IntegrationTestBase,
             "${dataDir}/sp-caddy/certs:/certs",
         ), caddyContainer.hostConfig().binds())
         assertEquals("always", caddyContainer.hostConfig().restartPolicy().name())
-        if (tls) {
-            assertEquals(listOf(PortBinding.of("0.0.0.0", "443"), PortBinding.of("0.0.0.0", "80")), caddyContainer.hostConfig().portBindings().values.flatten())
+        val portBindings = if (expectedPortBindings.isEmpty()) {
+            if (tls) {
+                mapOf("443" to "443", "80" to "80")
+            } else {
+                mapOf("80" to "80")
+            }
         } else {
-            assertEquals(listOf(PortBinding.of("0.0.0.0", "80")), caddyContainer.hostConfig().portBindings().values.flatten())
+            expectedPortBindings
         }
+        val expectedDockerPortBindings = portBindings.mapKeys { "${it.key}/tcp" }.mapValues { listOf(PortBinding.of("0.0.0.0", it.value)) }
+        assertEquals(expectedDockerPortBindings, caddyContainer.hostConfig().portBindings())
 
         val caddyConfig = prettyPrintJson(dataDir.resolve("sp-caddy").resolve("Caddyfile.json").readText())
         assertEquals(prettyPrintJson(readExpectedFile(expectedName, replacements)), caddyConfig)

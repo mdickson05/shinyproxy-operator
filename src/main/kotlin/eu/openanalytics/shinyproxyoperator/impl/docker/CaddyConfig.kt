@@ -59,6 +59,8 @@ class CaddyConfig(private val dockerClient: DockerClient, mainDataDir: Path, con
     private val fileManager = FileManager()
     private val caddyImage: String = config.readConfigValue("docker.io/library/caddy:2.8", "SPO_CADDY_IMAGE") { it }
     private val enableTls = config.readConfigValue(false, "SPO_CADDY_ENABLE_TLS") { it.toBoolean() }
+    private val httpHostPort = config.readConfigValue(80, "SPO_CADDY_HTTP_PORT") { it.toInt() }
+    private val httpsHostPort = config.readConfigValue(443, "SPO_CADDY_HTTPS_PORT") { it.toInt() }
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(3, TimeUnit.SECONDS)
@@ -68,6 +70,8 @@ class CaddyConfig(private val dockerClient: DockerClient, mainDataDir: Path, con
     // 120 seconds
     companion object {
         private const val MAX_CHECKS = 24
+        private const val HTTP_CONTAINER_PORT = 80
+        private const val HTTPS_CONTAINER_PORT = 443
     }
 
     init {
@@ -101,7 +105,7 @@ class CaddyConfig(private val dockerClient: DockerClient, mainDataDir: Path, con
     }
 
     private fun generateServer(): Map<String, Any> {
-        val listen = if (enableTls) listOf(":443") else listOf(":80")
+        val listen = if (enableTls) listOf(":$HTTPS_CONTAINER_PORT") else listOf(":$HTTP_CONTAINER_PORT")
         return mapOf("listen" to listen, "routes" to generateRoutes(), "tls_connection_policies" to generateTlsConnectionPolicies())
     }
 
@@ -277,7 +281,11 @@ class CaddyConfig(private val dockerClient: DockerClient, mainDataDir: Path, con
             logger.info { "[Caddy] Pulling image" }
             dockerActions.pullImage(caddyImage)
 
-            val ports = if (enableTls) listOf("80", "443") else listOf("80")
+            val ports = if (enableTls) listOf(HTTP_CONTAINER_PORT.toString(), HTTPS_CONTAINER_PORT.toString()) else listOf(HTTP_CONTAINER_PORT.toString())
+            val portBindings = mutableMapOf(HTTP_CONTAINER_PORT.toString() to listOf(PortBinding.of("0.0.0.0", httpHostPort.toString())))
+            if (enableTls) {
+                portBindings[HTTPS_CONTAINER_PORT.toString()] = listOf(PortBinding.of("0.0.0.0", httpsHostPort.toString()))
+            }
             val hostConfig = HostConfig.builder()
                 .networkMode(DockerOrchestrator.SHARED_NETWORK_NAME)
                 .binds(HostConfig.Bind.builder()
@@ -296,7 +304,8 @@ class CaddyConfig(private val dockerClient: DockerClient, mainDataDir: Path, con
                         .from(dataDir.resolve("certs").toString())
                         .to("/certs")
                         .build()
-                ).portBindings(ports.associateWith { listOf(PortBinding.of("0.0.0.0", it)) })
+                )
+                .portBindings(portBindings)
                 .restartPolicy(HostConfig.RestartPolicy.always())
                 .build()
 
@@ -335,7 +344,7 @@ class CaddyConfig(private val dockerClient: DockerClient, mainDataDir: Path, con
     private fun check(): Boolean {
         val ip = dockerActions.getContainerByName(containerName)?.getSharedNetworkIpAddress() ?: return false
 
-        val url = "http://${ip}/"
+        val url = "http://$ip:$HTTP_CONTAINER_PORT/"
         val request = Request.Builder()
             .url(url)
             .build()
